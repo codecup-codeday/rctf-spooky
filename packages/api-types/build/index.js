@@ -95,6 +95,9 @@ const trim = (parts, ...args) => {
   const responseSchema = yaml.parse(
     await fs.readFile(path.resolve(__dirname, 'response.schema.yml'), 'utf8')
   )
+  const routeConfigSchema = yaml.parse(
+    await fs.readFile(path.resolve(__dirname, 'routeConfig.schema.yml'), 'utf8')
+  )
   const permsSchema = yaml.parse(
     await fs.readFile(path.resolve(__dirname, 'perms.schema.yml'), 'utf8')
   )
@@ -183,6 +186,33 @@ const trim = (parts, ...args) => {
 
   const sourceRoot = path.resolve(__dirname, '../src')
 
+  const findAndLoadSingleYaml = async name => {
+    const foundFiles = (
+      await Promise.all(
+        ['yaml', 'yml']
+          .map(ext => path.resolve(sourceRoot, `${name}.${ext}`))
+          .map(async fpath => {
+            try {
+              await fs.stat(fpath)
+              return fpath
+            } catch {
+              return false
+            }
+          })
+      )
+    ).filter(f => f)
+    if (foundFiles.length > 1) {
+      const err = `Conflicting ${name}.y(a)ml found!`
+      console.error(err)
+      throw new Error(err)
+    } else if (foundFiles.length === 0) {
+      const err = `No ${name}.y(a)ml found!`
+      console.error(err)
+      throw new Error(err)
+    }
+    return yaml.parse(await fs.readFile(foundFiles[0], 'utf8'))
+  }
+
   // RESPONSES
 
   const responseFiles = await walk.async(path.resolve(sourceRoot, 'responses'))
@@ -252,36 +282,28 @@ const trim = (parts, ...args) => {
     )
   )
 
+  const responseKeys = [...responses.keys()].sort()
+
   pprint(responses)
+
+  // ROUTE CONFIG
+
+  routeConfigSchema.properties.badAuthResponse.enum = responseKeys
+  routeConfigSchema.properties.badPermsResponse.enum = responseKeys
+
+  const routeConfigValidator = ajv.compile(routeConfigSchema)
+
+  const routeConfig = await findAndLoadSingleYaml('routeConfig')
+  if (!routeConfigValidator(routeConfig)) {
+    console.error('routeConfig not valid:')
+    console.error(routeConfigValidator.errors)
+    console.error(routeConfig)
+    throw routeConfigValidator.errors
+  }
 
   // PERMISSIONS
 
-  const permsConfig = await (async () => {
-    const foundFiles = (
-      await Promise.all(
-        ['yaml', 'yml']
-          .map(ext => path.resolve(sourceRoot, `perms.${ext}`))
-          .map(async fpath => {
-            try {
-              await fs.stat(fpath)
-              return fpath
-            } catch {
-              return false
-            }
-          })
-      )
-    ).filter(f => f)
-    if (foundFiles.length > 1) {
-      const err = 'Conflicting perms.y(a)ml found!'
-      console.error(err)
-      throw new Error(err)
-    } else if (foundFiles.length === 0) {
-      const err = 'No perms.y(a)ml found!'
-      console.error(err)
-      throw new Error(err)
-    }
-    return yaml.parse(await fs.readFile(foundFiles[0], 'utf8'))
-  })()
+  const permsConfig = await findAndLoadSingleYaml('perms')
 
   permsSchema.additionalProperties.oneOf[1].items.enum = Object.keys(
     permsConfig
@@ -351,7 +373,7 @@ const trim = (parts, ...args) => {
 
   // ROUTES
 
-  routeSchema.properties.responses.items.enum = [...responses.keys()].sort()
+  routeSchema.properties.responses.items.enum = responseKeys
   routeSchema.properties.perms.items.enum = [...permsMap.keys()].sort()
   const routeValidator = ajv.compile(routeSchema)
 
@@ -465,6 +487,13 @@ const trim = (parts, ...args) => {
       console.error(routeValidator.errors)
       console.error(routeObj)
       throw routeValidator.errors
+    }
+
+    if (routeObj.requireAuth) {
+      routeObj.responses.push(routeConfig.badAuthResponse)
+      if (routeObj.perms) {
+        routeObj.responses.push(routeConfig.badPermsResponse)
+      }
     }
 
     const routeTypeIdentPrefix = toPascalCase(routeIdent) + 'Request'
