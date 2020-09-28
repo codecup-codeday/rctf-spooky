@@ -1,0 +1,9 @@
+type: object
+additionalProperties:
+  oneOf:
+    - type: integer
+      minimum: 0
+    - type: array
+      items:
+        type: string
+        # enum added at runtime

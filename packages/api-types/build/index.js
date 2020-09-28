@@ -95,6 +95,9 @@ const trim = (parts, ...args) => {
   const responseSchema = yaml.parse(
     await fs.readFile(path.resolve(__dirname, 'response.schema.yml'), 'utf8')
   )
+  const permsSchema = yaml.parse(
+    await fs.readFile(path.resolve(__dirname, 'perms.schema.yml'), 'utf8')
+  )
   const routeSchema = yaml.parse(
     await fs.readFile(path.resolve(__dirname, 'route.schema.yml'), 'utf8')
   )
@@ -180,6 +183,8 @@ const trim = (parts, ...args) => {
 
   const sourceRoot = path.resolve(__dirname, '../src')
 
+  // RESPONSES
+
   const responseFiles = await walk.async(path.resolve(sourceRoot, 'responses'))
 
   const responseKindRegex = /([a-z][a-zA-Z]*)\.ya?ml/
@@ -249,7 +254,105 @@ const trim = (parts, ...args) => {
 
   pprint(responses)
 
+  // PERMISSIONS
+
+  const permsConfig = await (async () => {
+    const foundFiles = (
+      await Promise.all(
+        ['yaml', 'yml']
+          .map(ext => path.resolve(sourceRoot, `perms.${ext}`))
+          .map(async fpath => {
+            try {
+              await fs.stat(fpath)
+              return fpath
+            } catch {
+              return false
+            }
+          })
+      )
+    ).filter(f => f)
+    if (foundFiles.length > 1) {
+      const err = 'Conflicting perms.y(a)ml found!'
+      console.error(err)
+      throw new Error(err)
+    } else if (foundFiles.length === 0) {
+      const err = 'No perms.y(a)ml found!'
+      console.error(err)
+      throw new Error(err)
+    }
+    return yaml.parse(await fs.readFile(foundFiles[0], 'utf8'))
+  })()
+
+  permsSchema.additionalProperties.oneOf[1].items.enum = Object.keys(
+    permsConfig
+  ).sort()
+  const permsValidator = ajv.compile(permsSchema)
+  if (!permsValidator(permsConfig)) {
+    console.error('perms not valid:')
+    console.error(permsValidator.errors)
+    console.error(permsConfig)
+    throw permsValidator.errors
+  }
+  const permsMap = new Map()
+  ;(() => {
+    const toConcretize = Object.keys(permsConfig)
+    while (toConcretize.length > 0) {
+      const currLen = toConcretize.length
+      for (let i = 0; i < currLen && toConcretize.length > 0; ++i) {
+        const curr = toConcretize.shift()
+        const val = permsConfig[curr]
+        if (val instanceof Array) {
+          let mask = 0
+          let successful = true
+          for (const key of val) {
+            const v = permsMap.get(key)
+            if (v !== undefined) {
+              mask |= v
+            } else {
+              successful = false
+              break
+            }
+          }
+          if (successful) {
+            permsMap.set(curr, mask)
+          } else {
+            toConcretize.push(curr)
+          }
+        } else {
+          permsMap.set(curr, 1 << val)
+        }
+      }
+      if (toConcretize.length === currLen) {
+        console.error('perms not valid:')
+        console.error('Reference loop detected:')
+        console.error(toConcretize)
+        throw new Error('Reference loop detected')
+      }
+    }
+  })()
+  pprint(permsMap)
+
+  let permsGlobalTypes = ''
+  permsGlobalTypes += trim`
+    export enum Permissions {
+  `
+  for (const [name, val] of permsMap.entries()) {
+    permsGlobalTypes += trim`
+      ${name} = ${val},
+    `
+  }
+  permsGlobalTypes += trim`
+    }
+
+    export default Permissions
+  `
+  permsGlobalTypes = ts(permsGlobalTypes)
+  console.log(permsGlobalTypes)
+
+  // ROUTES
+
   routeSchema.properties.responses.items.enum = [...responses.keys()].sort()
+  routeSchema.properties.perms.items.enum = [...permsMap.keys()].sort()
   const routeValidator = ajv.compile(routeSchema)
 
   let routeGlobalTypes = ts`
@@ -411,8 +514,16 @@ const trim = (parts, ...args) => {
       >
     `.replace(/\s*type T =\s*/, '')
 
+    const routeObjConcrete = { ...routeObj }
+    if ('perms' in routeObjConcrete) {
+      routeObjConcrete.perms = 0
+      for (const role of routeObj.perms) {
+        routeObjConcrete.perms |= permsMap.get(role)
+      }
+    }
+
     const entry = {
-      object: routeObj,
+      object: routeObjConcrete,
       ident: routeIdent,
       typeDef,
       tsDef,
