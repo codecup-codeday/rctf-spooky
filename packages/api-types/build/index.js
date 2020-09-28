@@ -5,6 +5,7 @@ const yaml = require('yaml')
 const prettier = require('prettier')
 const { compile: schema2tsCompile } = require('json-schema-to-typescript')
 const Ajv = require('ajv')
+const babel = require('@babel/core')
 
 const pprint = obj =>
   console.log(require('util').inspect(obj, false, null, true))
@@ -112,8 +113,6 @@ const trim = (parts, ...args) => {
 
   const responseValidator = ajv.compile(responseSchema)
 
-  const routeMethodEnum = routeSchema.properties.method.enum
-
   const prettierOpts = await prettier.resolveConfig()
   const compileOpts = {
     bannerComment: '',
@@ -139,43 +138,6 @@ const trim = (parts, ...args) => {
 
   const ts = makePrettierTag('typescript')
   const js = makePrettierTag('babel')
-
-  const routeMethodStrEnum = strEnumToTs(routeMethodEnum)
-
-  let responseGlobalTypes = ''
-
-  const responseKindTypeName = 'ResponseKind'
-  const responseKindType = ts`
-    export type ${responseKindTypeName}<PayloadType = unknown> = {
-      status: number
-      readonly __response_payload?: PayloadType
-    } & (
-      | {
-          message: string
-          data?: object | false
-        }
-      | {
-          rawJson: object
-        }
-      | {
-          rawContentType: string
-        }
-    )
-  `
-  responseGlobalTypes += '\n' + responseKindType
-  const getRespPayloadTypeTypeName = 'GetResponsePayloadType'
-  const getRespPayloadTypeType = ts`
-    export type ${getRespPayloadTypeTypeName}<
-      Kind extends ${responseKindTypeName}<unknown>
-    > = Kind extends ${responseKindTypeName}<infer PayloadType>
-      ? PayloadType extends undefined
-        ? never
-        : PayloadType
-      : never
-  `
-  responseGlobalTypes += '\n' + getRespPayloadTypeType
-  responseGlobalTypes = ts(responseGlobalTypes)
-  console.log(responseGlobalTypes)
 
   const compile = (schema, name, opts) =>
     schema2tsCompile(
@@ -215,6 +177,41 @@ const trim = (parts, ...args) => {
 
   // RESPONSES
 
+  let responseGlobalTypes = ''
+
+  const responseKindTypeName = 'ResponseKind'
+  const responseKindType = ts`
+    export type ${responseKindTypeName}<PayloadType = unknown> = {
+      status: number
+      readonly __response_payload?: PayloadType
+    } & (
+      | {
+          message: string
+          data?: object | false
+        }
+      | {
+          rawJson: object
+        }
+      | {
+          rawContentType: string
+        }
+    )
+  `
+  responseGlobalTypes += '\n' + responseKindType
+  const getRespPayloadTypeTypeName = 'GetResponsePayloadType'
+  const getRespPayloadTypeType = ts`
+    export type ${getRespPayloadTypeTypeName}<
+      Kind extends ${responseKindTypeName}<unknown>
+    > = Kind extends ${responseKindTypeName}<infer PayloadType>
+      ? PayloadType extends undefined
+        ? never
+        : PayloadType
+      : never
+  `
+  responseGlobalTypes += '\n' + getRespPayloadTypeType
+  responseGlobalTypes = ts(responseGlobalTypes)
+  console.log(responseGlobalTypes)
+
   const responseFiles = await walk.async(path.resolve(sourceRoot, 'responses'))
 
   const responseKindRegex = /([a-z][a-zA-Z]*)\.ya?ml/
@@ -238,9 +235,11 @@ const trim = (parts, ...args) => {
 
     const responseTypeIdent = toPascalCase(responseKind)
 
+    let hasPayload = false
     let tsDef = ''
     if ('rawJson' in responseObj) {
       tsDef += await compile(responseObj.rawJson, responseTypeIdent)
+      hasPayload = true
     }
     if ('data' in responseObj) {
       tsDef += await compile(responseObj.data, responseTypeIdent + 'Data')
@@ -260,12 +259,15 @@ const trim = (parts, ...args) => {
       tsDef += trim`
         }
       `
+      hasPayload = true
     }
 
     tsDef = ts(tsDef)
 
     const entry = {
       object: responseObj,
+      hasPayload,
+      payloadIdent: hasPayload ? responseTypeIdent : undefined,
       tsDef,
     }
 
@@ -356,7 +358,7 @@ const trim = (parts, ...args) => {
 
   let permsGlobalTypes = ''
   permsGlobalTypes += trim`
-    export enum Permissions {
+    export declare enum Permissions {
   `
   for (const [name, val] of permsMap.entries()) {
     permsGlobalTypes += trim`
@@ -420,8 +422,8 @@ const trim = (parts, ...args) => {
   const getRouteBodyTypeTypeName = 'GetRouteBodyType'
   const getRouteBodyTypeType = ts`
     export type ${getRouteBodyTypeTypeName}<
-      R extends ${routeTypeName}<unknown, unknown, unknown, unknown>
-    > = R extends ${routeTypeName}<unknown, infer BodyType, unknown, unknown>
+      R extends ${routeTypeName}<any, unknown, unknown, unknown>
+    > = R extends ${routeTypeName}<any, infer BodyType, unknown, unknown>
       ? BodyType extends undefined
         ? never
         : BodyType
@@ -432,8 +434,8 @@ const trim = (parts, ...args) => {
   const getRouteQSTypeTypeName = 'GetRouteQSType'
   const getRouteQSTypeType = ts`
     export type ${getRouteQSTypeTypeName}<
-      R extends ${routeTypeName}<unknown, unknown, unknown, unknown>
-    > = R extends ${routeTypeName}<unknown, unknown, infer QSType, unknown>
+      R extends ${routeTypeName}<any, unknown, unknown, unknown>
+    > = R extends ${routeTypeName}<any, unknown, infer QSType, unknown>
       ? QSType extends undefined
         ? never
         : QSType
@@ -444,8 +446,8 @@ const trim = (parts, ...args) => {
   const getRouteParamsTypeTypeName = 'GetRouteParamsType'
   const getRouteParamsTypeType = ts`
     export type ${getRouteParamsTypeTypeName}<
-      R extends ${routeTypeName}<unknown, unknown, unknown, unknown>
-    > = R extends ${routeTypeName}<unknown, unknown, unknown, infer ParamsType>
+      R extends ${routeTypeName}<any, unknown, unknown, unknown>
+    > = R extends ${routeTypeName}<any, unknown, unknown, infer ParamsType>
       ? ParamsType extends undefined
         ? never
         : ParamsType
@@ -456,7 +458,7 @@ const trim = (parts, ...args) => {
   const getRouteResponseTypeTypeName = 'GetRouteResponseType'
   const getRouteResponseTypeType = ts`
     export type ${getRouteResponseTypeTypeName}<
-      R extends ${routeTypeName}<unknown, unknown, unknown, unknown>
+      R extends ${routeTypeName}<any, unknown, unknown, unknown>
     > = R extends ${routeTypeName}<infer ResponseKinds, unknown, unknown, unknown>
       ? ResponsePayloads[ResponseKinds]
       : never
@@ -561,7 +563,139 @@ const trim = (parts, ...args) => {
     return entry
   }
 
-  const routes = await Promise.all(routeFiles.map(loadRouteFromFile))
+  const routes = (
+    await Promise.all(routeFiles.map(loadRouteFromFile))
+  ).sort((a, b) => a.ident.localeCompare(b.ident))
 
   pprint(routes)
+
+  // OUTPUT
+
+  const outputRoot = path.resolve(__dirname, '..')
+
+  const generatedHeader =
+    js`
+    /**
+     * AUTO-GENERATED FILE, DO NOT EDIT!
+     */
+  ` + '\n'
+
+  const babelNodeOpts = {
+    presets: [
+      [
+        '@babel/preset-env',
+        {
+          targets: {
+            node: true,
+          },
+        },
+      ],
+    ],
+  }
+
+  const emitJs = async (filename, esmCode) => {
+    esmCode = js(generatedHeader + esmCode)
+    return [
+      [`${filename}.mjs`, esmCode],
+      [
+        `${filename}.js`,
+        (
+          await babel.transformAsync(esmCode, {
+            ...babelNodeOpts,
+            filename: `${filename}.js`,
+          })
+        ).code,
+      ],
+    ]
+  }
+  const emitDTs = async (filename, dTsCode) => {
+    dTsCode = generatedHeader + dTsCode
+    dTsCode = dTsCode.replace(/(export )(type|const|let) /g, '$1declare $2 ')
+    dTsCode = ts(dTsCode)
+    return [[`${filename}.d.ts`, dTsCode]]
+  }
+
+  let permissionsMJs = trim`
+    export const Permissions = {
+  `
+  for (const [name, val] of permsMap.entries()) {
+    permissionsMJs += trim`
+      ${name}: ${val},
+    `
+  }
+  permissionsMJs += trim`
+    }
+
+    export default Permissions
+  `
+  const permissionsDTs = permsGlobalTypes
+
+  let responsesMJs = ''
+  let responsesDTs = responseGlobalTypes
+  for (const kind of responseKeys) {
+    responsesDTs += '\n' + responses.get(kind).tsDef
+  }
+  responsesDTs += '\n'
+  for (const kind of responseKeys) {
+    const response = responses.get(kind)
+    responsesDTs += ts`
+      export declare const ${kind}: ${responseKindTypeName}<
+        ${response.hasPayload ? response.payloadIdent : 'never'}
+      >
+    `
+    responsesMJs +=
+      '\n' +
+      js`
+      export const ${kind} = ${JSON.stringify(response.object)}
+      `
+  }
+  responsesDTs += '\n'
+  responsesDTs += trim`
+    export interface ResponsePayloads {
+  `
+  for (const kind of responseKeys) {
+    const response = responses.get(kind)
+    responsesDTs += trim`
+      ${kind}: ${response.hasPayload ? response.payloadIdent : 'never'}
+    `
+  }
+  responsesDTs += trim`
+    }
+  `
+
+  let routesMJs = ''
+  let routesDTs = routeGlobalTypes
+  for (const route of routes) {
+    routesDTs += '\n' + route.tsDef
+  }
+  routesDTs += '\n'
+  for (const route of routes) {
+    routesDTs +=
+      '\n' +
+      ts`
+      export declare const ${route.ident}: ${route.typeDef}
+      `
+    routesMJs +=
+      '\n' +
+      js`
+      export const ${route.ident} = ${JSON.stringify(route.object)}
+      `
+  }
+
+  await Promise.all(
+    (
+      await Promise.all([
+        emitJs('permissions', permissionsMJs),
+        emitDTs('permissions', permissionsDTs),
+        emitJs('responses', responsesMJs),
+        emitDTs('responses', responsesDTs),
+        emitJs('routes', routesMJs),
+        emitDTs('routes', routesDTs),
+      ])
+    )
+      .flat()
+      .map(([name, contents]) =>
+        fs.writeFile(path.resolve(outputRoot, name), contents)
+      )
+  )
 })()
