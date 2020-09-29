@@ -76,6 +76,32 @@ const normalizeOneOf = makeSchemaModifier(schema => {
       ...omit(schema, 'oneOf'),
       ...subschema,
     }))
+    if (
+      schema.type === 'object' &&
+      schema.properties &&
+      schema.oneOf.every(
+        subschema =>
+          Object.keys(subschema).filter(k => k !== 'required').length === 0
+      )
+    ) {
+      // oneOf is being used to select a (mostly) mutually-exclusive set of
+      // properties - try to optimize the resultant schema by removing the
+      // excluded properties from the oneOf cloned subschemas.
+
+      const propertySet = schema.oneOf
+        .map(s => s.required)
+        .filter(e => e)
+        .flat()
+      oneOf.forEach(subschema => {
+        subschema.properties = { ...subschema.properties }
+        const currProperties = subschema.required
+        for (const prop of propertySet) {
+          if (!currProperties.includes(prop)) {
+            delete subschema.properties[prop]
+          }
+        }
+      })
+    }
     return { oneOf }
   } else {
     return schema
