@@ -670,10 +670,12 @@ const trim = (parts, ...args) => {
   }
   routesDTs += '\n'
   for (const route of routes) {
+    const routeTypeName = toPascalCase(route.ident) + 'Route'
     routesDTs +=
       '\n' +
       ts`
-      export declare const ${route.ident}: ${route.typeDef}
+      export declare type ${routeTypeName} = ${route.typeDef.slice(0, -1)}
+      export declare const ${route.ident}: ${routeTypeName}
       `
     routesMJs +=
       '\n' +
@@ -681,6 +683,27 @@ const trim = (parts, ...args) => {
       export const ${route.ident} = ${JSON.stringify(route.object)}
       `
   }
+
+  const routesDeclaredTypes = [
+    ...routesDTs.matchAll(
+      /export (declare )?(interface|type) ([A-Z][a-zA-Z0-9]*)+/g
+    ),
+  ].map(match => match[3])
+  pprint(routesDeclaredTypes)
+
+  const indexMJs = ''
+  let indexDTs = ''
+  indexDTs += trim`
+    export {
+  `
+  for (const type of routesDeclaredTypes) {
+    indexDTs += `
+      ${type},
+    `
+  }
+  indexDTs += trim`
+    } from './routes'
+  `
 
   await Promise.all(
     (
@@ -691,6 +714,8 @@ const trim = (parts, ...args) => {
         emitDTs('responses', responsesDTs),
         emitJs('routes', routesMJs),
         emitDTs('routes', routesDTs),
+        emitJs('index', indexMJs),
+        emitDTs('index', indexDTs),
       ])
     )
       .flat()

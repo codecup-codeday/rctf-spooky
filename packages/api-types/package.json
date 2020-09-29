@@ -3,11 +3,15 @@
   "license": "BSD-3-Clause",
   "version": "3.0.0-alpha.0",
   "description": "Types and schemas for rCTF API",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "index.js",
+  "module": "index.mjs",
+  "types": "index.d.ts",
   "files": [
-    "dist"
+    "/*.js",
+    "/*.mjs",
+    "/*.d.ts"
   ],
+  "sideEffects": "false",
   "devDependencies": {
     "@babel/core": "7.11.6",
     "@babel/preset-env": "7.11.5",
